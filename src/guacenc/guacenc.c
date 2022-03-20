@@ -37,13 +37,14 @@ int main(int argc, char* argv[]) {
 
     /* Load defaults */
     bool force = false;
+    bool verbose = false;
     int width = GUACENC_DEFAULT_WIDTH;
     int height = GUACENC_DEFAULT_HEIGHT;
     int bitrate = GUACENC_DEFAULT_BITRATE;
 
     /* Parse arguments */
     int opt;
-    while ((opt = getopt(argc, argv, "s:r:f")) != -1) {
+    while ((opt = getopt(argc, argv, "s:r:f:v")) != -1) {
 
         /* -s: Dimensions (WIDTHxHEIGHT) */
         if (opt == 's') {
@@ -64,6 +65,10 @@ int main(int argc, char* argv[]) {
         /* -f: Force */
         else if (opt == 'f')
             force = true;
+
+        /* -v: Verbose */
+        else if (opt == 'v')
+            verbose = true;
 
         /* Invalid option */
         else {
@@ -119,7 +124,7 @@ int main(int argc, char* argv[]) {
 
         /* Attempt encoding, log granular success/failure at debug level */
         if (guacenc_encode(path, out_path, "mpeg4",
-                    width, height, bitrate, force)) {
+                           width, height, bitrate, force, verbose)) {
             failures++;
             guacenc_log(GUAC_LOG_DEBUG,
                     "%s was NOT successfully encoded.", path);
@@ -148,9 +153,9 @@ invalid_options:
             " [-s WIDTHxHEIGHT]"
             " [-r BITRATE]"
             " [-f]"
+            " [-v]"
             " [FILE]...\n", argv[0]);
 
     return 1;
 
 }
-

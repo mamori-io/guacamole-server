@@ -159,13 +159,15 @@ guac_socket* guac_socket_alloc() {
     socket->__keep_alive_enabled = 0;
 
     /* No handlers yet */
-    socket->read_handler   = NULL;
-    socket->write_handler  = NULL;
-    socket->select_handler = NULL;
-    socket->free_handler   = NULL;
-    socket->flush_handler  = NULL;
-    socket->lock_handler   = NULL;
-    socket->unlock_handler = NULL;
+    socket->read_handler     = NULL;
+    socket->write_handler    = NULL;
+    socket->select_handler   = NULL;
+    socket->free_handler     = NULL;
+    socket->flush_handler    = NULL;
+    socket->lock_handler     = NULL;
+    socket->unlock_handler   = NULL;
+    socket->size_handler     = NULL;
+    socket->position_handler = NULL;
 
     return socket;
 
@@ -216,6 +218,21 @@ void guac_socket_free(guac_socket* socket) {
     free(socket);
 }
 
+ssize_t guac_socket_size(guac_socket* socket) {
+  if(socket->size_handler)
+    return socket->size_handler(socket);
+
+  return 0;
+}
+
+
+ssize_t guac_socket_position(guac_socket* socket) {
+  if(socket->position_handler)
+    return socket->position_handler(socket);
+
+  return 0;
+}
+
 ssize_t guac_socket_write_int(guac_socket* socket, int64_t i) {
 
     char buffer[128];
@@ -250,7 +267,7 @@ ssize_t __guac_socket_write_base64_triplet(guac_socket* socket,
         /* Byte 1: AAAAAA [AABBBB] BBBBCC CCCCCC */
         output[1] = __guac_socket_BASE64_CHARACTERS[((a & 0x03) << 4) | ((b & 0xF0) >> 4)];
 
-        /* 
+        /*
          * Bytes 2 and 3, zero characters of padding:
          *
          * AAAAAA  AABBBB [BBBBCC] CCCCCC
@@ -261,19 +278,19 @@ ssize_t __guac_socket_write_base64_triplet(guac_socket* socket,
             output[3] = __guac_socket_BASE64_CHARACTERS[c & 0x3F];
         }
 
-        /* 
+        /*
          * Bytes 2 and 3, one character of padding:
          *
          * AAAAAA  AABBBB [BBBB--] ------
          * AAAAAA  AABBBB  BBBB-- [------]
          */
-        else { 
+        else {
             output[2] = __guac_socket_BASE64_CHARACTERS[((b & 0x0F) << 2)];
             output[3] = '=';
         }
     }
 
-    /* 
+    /*
      * Bytes 1, 2, and 3, two characters of padding:
      *
      * AAAAAA [AA----] ------  ------
@@ -369,4 +386,3 @@ ssize_t guac_socket_flush_base64(guac_socket* socket) {
     return 0;
 
 }
-

@@ -49,20 +49,38 @@
  * @param socket
  *     The guac_socket through which instructions should be read.
  *
+ * @param verbose
+ *     If true, output progress information
+ *
  * @return
  *     Zero on success, non-zero if parsing of Guacamole protocol data through
  *     the given socket fails.
  */
 static int guacenc_read_instructions(guacenc_display* display,
-        const char* path, guac_socket* socket) {
+                                     const char* path, guac_socket* socket, bool verbose) {
 
     /* Obtain Guacamole protocol parser */
     guac_parser* parser = guac_parser_alloc();
     if (parser == NULL)
         return 1;
 
+    ssize_t total_size = guac_socket_size(socket);
+    int countdown = 100;
     /* Continuously read and handle all instructions */
     while (!guac_parser_read(parser, socket, -1)) {
+        if(verbose && countdown-- == 0) {
+          countdown = 100;
+          ssize_t pos = guac_socket_position(socket);
+          int percentage;
+          if(total_size == 0)
+            percentage = 0;
+          else
+            percentage = 100 * pos / total_size;
+
+
+          guacenc_log(GUAC_LOG_INFO, "Progres: %d", percentage);
+        }
+
         if (guacenc_handle_instruction(display, parser->opcode,
                 parser->argc, parser->argv)) {
             guacenc_log(GUAC_LOG_DEBUG, "Handling of \"%s\" instruction "
@@ -85,7 +103,7 @@ static int guacenc_read_instructions(guacenc_display* display,
 }
 
 int guacenc_encode(const char* path, const char* out_path, const char* codec,
-        int width, int height, int bitrate, bool force) {
+                   int width, int height, int bitrate, bool force, bool verbose) {
 
     /* Open input file */
     int fd = open(path, O_RDONLY);
@@ -142,7 +160,7 @@ int guacenc_encode(const char* path, const char* out_path, const char* codec,
     guacenc_log(GUAC_LOG_INFO, "Encoding \"%s\" to \"%s\" ...", path, out_path);
 
     /* Attempt to read all instructions in the file */
-    if (guacenc_read_instructions(display, path, socket)) {
+    if (guacenc_read_instructions(display, path, socket, verbose)) {
         guac_socket_free(socket);
         guacenc_display_free(display);
         return 1;
@@ -153,4 +171,3 @@ int guacenc_encode(const char* path, const char* out_path, const char* codec,
     return guacenc_display_free(display);
 
 }
-

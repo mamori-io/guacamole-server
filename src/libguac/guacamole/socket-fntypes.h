@@ -112,5 +112,13 @@ typedef void guac_socket_unlock_handler(guac_socket* socket);
  */
 typedef int guac_socket_free_handler(guac_socket* socket);
 
-#endif
+/**
+ * Generic handler for getting the size or position of the socket
+ *
+ * @param socket The guac_socket
+ * @return the size of the underlying file or 0 if unknown
+ */
+typedef ssize_t guac_socket_size_handler(guac_socket* socket);
 
+
+#endif

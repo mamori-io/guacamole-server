@@ -54,12 +54,14 @@
  *     Perform the encoding, even if the input file appears to be an
  *     in-progress recording (has an associated lock).
  *
+ * @param verbose
+ *     Output progress information while encoding
+ *
  * @return
  *     Zero on success, non-zero if an error prevented successful encoding of
  *     the video.
  */
 int guacenc_encode(const char* path, const char* out_path, const char* codec,
-        int width, int height, int bitrate, bool force);
+                   int width, int height, int bitrate, bool force, bool verbose);
 
 #endif
-

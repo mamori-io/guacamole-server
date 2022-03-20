@@ -81,6 +81,17 @@ struct guac_socket {
      */
     guac_socket_free_handler* free_handler;
 
+
+    /**
+     * Handler which will be called to get the size of the underlying file
+     */
+    guac_socket_size_handler* size_handler;
+
+    /**
+     * Handler which will be called to get the current position in the underlying file
+     */
+    guac_socket_size_handler* position_handler;
+
     /**
      * The current state of this guac_socket.
      */
@@ -130,6 +141,23 @@ guac_socket* guac_socket_alloc();
  * @param socket The guac_socket to free.
  */
 void guac_socket_free(guac_socket* socket);
+
+
+/**
+ * Gets the size of the underlying socket
+ *
+ * @param socket The guac_socket to get the size of.
+ * @return the size of the underlying socket or 0
+ */
+ssize_t guac_socket_size(guac_socket* socket);
+
+/**
+ * Gets the position of the underlying socket
+ *
+ * @param socket The guac_socket to get the size of.
+ * @return the position of the underlying socket or 0
+ */
+ssize_t guac_socket_position(guac_socket* socket);
 
 /**
  * Declares that the given socket must automatically send a keep-alive ping
@@ -370,4 +398,3 @@ ssize_t guac_socket_flush(guac_socket* socket);
 int guac_socket_select(guac_socket* socket, int usec_timeout);
 
 #endif
-

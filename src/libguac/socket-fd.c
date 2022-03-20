@@ -29,6 +29,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #ifdef ENABLE_WINSOCK
@@ -309,7 +311,7 @@ static ssize_t guac_socket_fd_write_handler(guac_socket* socket,
 
     int retval;
     guac_socket_fd_data* data = (guac_socket_fd_data*) socket->data;
-    
+
     /* Acquire exclusive access to buffer */
     pthread_mutex_lock(&(data->buffer_lock));
 
@@ -388,6 +390,39 @@ static int guac_socket_fd_free_handler(guac_socket* socket) {
 }
 
 /**
+ * Returns the size of the underlying file if available
+ *
+ * @param socket
+ *     The guac_socket to get the size of.
+ *
+ * @return
+ *     The size in bytes of the underlying file
+ */
+static ssize_t guac_socket_fd_size_handler(guac_socket* socket) {
+    guac_socket_fd_data* data = (guac_socket_fd_data*) socket->data;
+
+    struct stat file_stat;
+    fstat(data->fd, &file_stat);
+
+    return file_stat.st_size;
+}
+
+/**
+ * Returns the position in the underlying file if available
+ *
+ * @param socket
+ *     The guac_socket to get the size of.
+ *
+ * @return
+ *     The position in bytes of the underlying file
+ */
+static ssize_t guac_socket_fd_position_handler(guac_socket* socket) {
+    guac_socket_fd_data* data = (guac_socket_fd_data*) socket->data;
+
+    return lseek(data->fd, 0, SEEK_CUR);
+}
+
+/**
  * Acquires exclusive access to the given socket.
  *
  * @param socket
@@ -436,17 +471,17 @@ guac_socket* guac_socket_open(int fd) {
     /* Init locks */
     pthread_mutex_init(&(data->socket_lock), &lock_attributes);
     pthread_mutex_init(&(data->buffer_lock), &lock_attributes);
-    
-    /* Set read/write handlers */
-    socket->read_handler   = guac_socket_fd_read_handler;
-    socket->write_handler  = guac_socket_fd_write_handler;
-    socket->select_handler = guac_socket_fd_select_handler;
-    socket->lock_handler   = guac_socket_fd_lock_handler;
-    socket->unlock_handler = guac_socket_fd_unlock_handler;
-    socket->flush_handler  = guac_socket_fd_flush_handler;
-    socket->free_handler   = guac_socket_fd_free_handler;
 
+    /* Set read/write handlers */
+    socket->read_handler     = guac_socket_fd_read_handler;
+    socket->write_handler    = guac_socket_fd_write_handler;
+    socket->select_handler   = guac_socket_fd_select_handler;
+    socket->lock_handler     = guac_socket_fd_lock_handler;
+    socket->unlock_handler   = guac_socket_fd_unlock_handler;
+    socket->flush_handler    = guac_socket_fd_flush_handler;
+    socket->free_handler     = guac_socket_fd_free_handler;
+    socket->size_handler     = guac_socket_fd_size_handler;
+    socket->position_handler = guac_socket_fd_position_handler;
     return socket;
 
 }
-
