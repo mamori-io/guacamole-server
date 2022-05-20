@@ -17,7 +17,6 @@
  * under the License.
  */
 
-#include "config.h"
 
 #include "common/clipboard.h"
 #include "common/cursor.h"
@@ -28,7 +27,8 @@
 #include "terminal/palette.h"
 #include "terminal/select.h"
 #include "terminal/terminal.h"
-#include "terminal/terminal_handlers.h"
+#include "terminal/terminal-handlers.h"
+#include "terminal/terminal-priv.h"
 #include "terminal/types.h"
 #include "terminal/typescript.h"
 
@@ -185,8 +185,16 @@ static int guac_terminal_effective_buffer_length(guac_terminal* term) {
 
 }
 
-int guac_terminal_available_scroll(guac_terminal* term) {
+int guac_terminal_get_available_scroll(guac_terminal* term) {
     return guac_terminal_effective_buffer_length(term) - term->term_height;
+}
+
+int guac_terminal_get_rows(guac_terminal* term) {
+    return term->term_height;
+}
+
+int guac_terminal_get_columns(guac_terminal* term) {
+    return term->term_width;
 }
 
 void guac_terminal_reset(guac_terminal* term) {
@@ -306,11 +314,33 @@ void* guac_terminal_thread(void* data) {
 
 }
 
+guac_terminal_options* guac_terminal_options_create(
+        int width, int height, int dpi) {
+
+    guac_terminal_options* options = malloc(sizeof(guac_terminal_options));
+
+    /* Set all required parameters */
+    options->width = width;
+    options->height = height;
+    options->dpi = dpi;
+
+    /* Set default values for all other parameters */
+    options->disable_copy = GUAC_TERMINAL_DEFAULT_DISABLE_COPY;
+    options->max_scrollback = GUAC_TERMINAL_DEFAULT_MAX_SCROLLBACK;
+    options->font_name = GUAC_TERMINAL_DEFAULT_FONT_NAME;
+    options->font_size = GUAC_TERMINAL_DEFAULT_FONT_SIZE;
+    options->color_scheme = GUAC_TERMINAL_DEFAULT_COLOR_SCHEME;
+    options->backspace = GUAC_TERMINAL_DEFAULT_BACKSPACE;
+
+    return options;
+}
+
 guac_terminal* guac_terminal_create(guac_client* client,
-        guac_common_clipboard* clipboard, bool disable_copy,
-        int max_scrollback, const char* font_name, int font_size, int dpi,
-        int width, int height, const char* color_scheme,
-        const int backspace) {
+        guac_terminal_options* options) {
+
+    /* The width and height may need to be changed from what's requested */
+    int width = options->width;
+    int height = options->height;
 
     /* Build default character using default colors */
     guac_terminal_char default_char = {
@@ -328,7 +358,7 @@ guac_terminal* guac_terminal_create(guac_client* client,
     guac_terminal_color (*default_palette)[256] = (guac_terminal_color(*)[256])
             malloc(sizeof(guac_terminal_color[256]));
 
-    guac_terminal_parse_color_scheme(client, color_scheme,
+    guac_terminal_parse_color_scheme(client, options->color_scheme,
                                      &default_char.attributes.foreground,
                                      &default_char.attributes.background,
                                      default_palette);
@@ -345,9 +375,9 @@ guac_terminal* guac_terminal_create(guac_client* client,
     term->file_download_handler = NULL;
 
     /* Copy initially-provided color scheme and font details */
-    term->color_scheme = strdup(color_scheme);
-    term->font_name = strdup(font_name);
-    term->font_size = font_size;
+    term->color_scheme = strdup(options->color_scheme);
+    term->font_name = strdup(options->font_name);
+    term->font_size = options->font_size;
 
     /* Set size of available screen area */
     term->outer_width = width;
@@ -359,12 +389,12 @@ guac_terminal* guac_terminal_create(guac_client* client,
     pthread_mutex_init(&(term->modified_lock), NULL);
 
     /* Maximum and requested scrollback are initially the same */
-    term->max_scrollback = max_scrollback;
-    term->requested_scrollback = max_scrollback;
+    term->max_scrollback = options->max_scrollback;
+    term->requested_scrollback = options->max_scrollback;
 
     /* Allocate enough space for maximum scrollback, bumping up internal
      * storage as necessary to allow screen to be resized to maximum height */
-    int initial_scrollback = max_scrollback;
+    int initial_scrollback = options->max_scrollback;
     if (initial_scrollback < GUAC_TERMINAL_MAX_ROWS)
         initial_scrollback = GUAC_TERMINAL_MAX_ROWS;
 
@@ -374,7 +404,7 @@ guac_terminal* guac_terminal_create(guac_client* client,
 
     /* Init display */
     term->display = guac_terminal_display_alloc(client,
-            font_name, font_size, dpi,
+            options->font_name, options->font_size, options->dpi,
             &default_char.attributes.foreground,
             &default_char.attributes.background,
             (guac_terminal_color(*)[256]) default_palette);
@@ -392,8 +422,8 @@ guac_terminal* guac_terminal_create(guac_client* client,
     /* Init terminal state */
     term->current_attributes = default_char.attributes;
     term->default_char = default_char;
-    term->clipboard = clipboard;
-    term->disable_copy = disable_copy;
+    term->clipboard = guac_common_clipboard_alloc();
+    term->disable_copy = options->disable_copy;
 
     /* Calculate character size */
     int rows    = height / term->display->char_height;
@@ -440,12 +470,12 @@ guac_terminal* guac_terminal_create(guac_client* client,
     pthread_mutex_init(&(term->lock), NULL);
 
     /* Repaint and resize overall display */
-    guac_terminal_repaint_default_layer(term, client->socket);
+    guac_terminal_repaint_default_layer(term, term->client->socket);
     guac_terminal_display_resize(term->display,
             term->term_width, term->term_height);
 
     /* Allocate scrollbar */
-    term->scrollbar = guac_terminal_scrollbar_alloc(client, GUAC_DEFAULT_LAYER,
+    term->scrollbar = guac_terminal_scrollbar_alloc(term->client, GUAC_DEFAULT_LAYER,
             width, height, term->term_height);
 
     /* Associate scrollbar with this terminal */
@@ -455,6 +485,10 @@ guac_terminal* guac_terminal_create(guac_client* client,
     /* Init terminal */
     guac_terminal_reset(term);
 
+    /* All mouse buttons are released */
+    term->mouse_mask = 0;
+
+    /* All keyboard modifiers are released */
     term->mod_alt   =
     term->mod_ctrl  =
     term->mod_shift = 0;
@@ -471,7 +505,7 @@ guac_terminal* guac_terminal_create(guac_client* client,
     }
 
     /* Configure backspace */
-    term->backspace = backspace;
+    term->backspace = options->backspace;
 
     return term;
 
@@ -521,6 +555,9 @@ void guac_terminal_free(guac_terminal* term) {
     /* Free copies of font and color scheme information */
     free((char*) term->color_scheme);
     free((char*) term->font_name);
+
+    /* Free clipboard */
+    guac_common_clipboard_free(term->clipboard);
 
     /* Free the terminal itself */
     free(term);
@@ -863,7 +900,7 @@ int guac_terminal_scroll_up(guac_terminal* term,
 
         /* Reset scrollbar bounds */
         guac_terminal_scrollbar_set_bounds(term->scrollbar,
-                -guac_terminal_available_scroll(term), 0);
+                -guac_terminal_get_available_scroll(term), 0);
 
         /* Update cursor location if within region */
         if (term->visible_cursor_row >= start_row &&
@@ -1073,7 +1110,7 @@ void guac_terminal_scroll_display_up(guac_terminal* terminal,
     int row, column;
 
     /* Limit scroll amount by size of scrollback buffer */
-    int available_scroll = guac_terminal_available_scroll(terminal);
+    int available_scroll = guac_terminal_get_available_scroll(terminal);
     if (terminal->scroll_offset + scroll_amount > available_scroll)
         scroll_amount = available_scroll - terminal->scroll_offset;
 
@@ -1274,7 +1311,7 @@ static void __guac_terminal_resize(guac_terminal* term, int width, int height) {
     if (height > term->term_height) {
 
         /* If undisplayed rows exist in the buffer, shift them into view */
-        int available_scroll = guac_terminal_available_scroll(term);
+        int available_scroll = guac_terminal_get_available_scroll(term);
         if (available_scroll > 0) {
 
             /* If the new terminal bottom reveals N rows, shift down N rows */
@@ -1399,7 +1436,7 @@ int guac_terminal_resize(guac_terminal* terminal, int width, int height) {
     /* Notify scrollbar of resize */
     guac_terminal_scrollbar_parent_resized(terminal->scrollbar, width, height, rows);
     guac_terminal_scrollbar_set_bounds(terminal->scrollbar,
-            -guac_terminal_available_scroll(terminal), 0);
+            -guac_terminal_get_available_scroll(terminal), 0);
 
 
     /* Release terminal */
@@ -1993,6 +2030,10 @@ void guac_terminal_apply_color_scheme(guac_terminal* terminal,
 
 }
 
+const char* guac_terminal_get_color_scheme(guac_terminal* terminal) {
+    return terminal->color_scheme;
+}
+
 void guac_terminal_apply_font(guac_terminal* terminal, const char* font_name,
         int font_size, int dpi) {
 
@@ -2031,3 +2072,40 @@ void guac_terminal_apply_font(guac_terminal* terminal, const char* font_name,
 
 }
 
+void guac_terminal_set_upload_path_handler(guac_terminal* terminal,
+        guac_terminal_upload_path_handler* upload_path_handler) {
+    terminal->upload_path_handler = upload_path_handler;
+}
+
+void guac_terminal_set_file_download_handler(guac_terminal* terminal,
+        guac_terminal_file_download_handler* file_download_handler) {
+    terminal->file_download_handler = file_download_handler;
+}
+
+const char* guac_terminal_get_font_name(guac_terminal* terminal) {
+    return terminal->font_name;
+}
+
+int guac_terminal_get_font_size(guac_terminal* terminal) {
+    return terminal->font_size;
+}
+
+int guac_terminal_get_mod_ctrl(guac_terminal* terminal) {
+    return terminal->mod_ctrl;
+}
+
+void guac_terminal_clipboard_reset(guac_terminal* terminal,
+        const char* mimetype) {
+    guac_common_clipboard_reset(terminal->clipboard, mimetype);
+}
+
+void guac_terminal_clipboard_append(guac_terminal* terminal,
+        const char* data, int length) {
+    guac_common_clipboard_append(terminal->clipboard, data, length);
+}
+
+void guac_terminal_remove_user(guac_terminal* terminal, guac_user* user) {
+
+    /* Remove the user from the terminal cursor */
+    guac_common_cursor_remove_user(terminal->cursor, user);
+}
