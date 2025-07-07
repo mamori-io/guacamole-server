@@ -17,7 +17,6 @@
  * under the License.
  */
 
-
 #ifndef _GUAC_USER_HANDLERS__H
 #define _GUAC_USER_HANDLERS__H
 
@@ -217,6 +216,13 @@ __guac_instruction_handler __guac_handshake_video_handler;
  * available to the client.
  */
 __guac_instruction_handler __guac_handshake_image_handler;
+
+/**
+ * Internal handler function that is called when the name instruction is
+ * received during the handshake process, specifying the name of the Guacamole
+ * user establishing the connection.
+ */
+__guac_instruction_handler __guac_handshake_name_handler;
 
 /**
  * Internal handler function that is called when the timezone instruction is

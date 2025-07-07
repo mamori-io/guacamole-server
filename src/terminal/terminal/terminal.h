@@ -17,7 +17,6 @@
  * under the License.
  */
 
-
 #ifndef _GUAC_TERMINAL_H
 #define _GUAC_TERMINAL_H
 
@@ -141,19 +140,35 @@ typedef enum guac_terminal_cursor_type {
 } guac_terminal_cursor_type;
 
 /**
- * Handler for characters printed to the terminal. When a character is printed,
- * the current char handler for the terminal is called and given that
- * character.
- */
-typedef int guac_terminal_char_handler(guac_terminal* term, unsigned char c);
-
-/**
- * Handler for setting the destination path for file uploads.
+ * Handler that is invoked whenever the necessary terminal codes are sent to
+ * to the given terminal to change the path for future file uploads.
+ *
+ * @param client
+ *     The guac_client associated with the terminal receiving the upload path
+ *     change terminal code.
+ *
+ * @param path
+ *     The requested path.
  */
 typedef void guac_terminal_upload_path_handler(guac_client* client, char* path);
 
 /**
- * Handler for creating an outbound file download stream for a specified file.
+ * Handler that is invoked whenever the necessary terminal codes are sent to
+ * initiate a download of a given remote file.
+ *
+ * @param client
+ *     The guac_client associated with the terminal receiving the file download
+ *     terminal code.
+ *
+ * @param filename
+ *     The name of the requested file. This may be a relative or absolute path,
+ *     and it is up to the implementation to define how this value is
+ *     interpreted.
+ *
+ * @return
+ *     The file stream created for the file download, already configured to
+ *     properly handle "ack" responses, etc. from the client, or NULL if the
+ *     stream could not be created.
  */
 typedef guac_stream* guac_terminal_file_download_handler(guac_client* client, char* filename);
 
@@ -164,6 +179,11 @@ typedef guac_stream* guac_terminal_file_download_handler(guac_client* client, ch
  * to create a new options struct, use guac_terminal_options_create.
  */
 typedef struct guac_terminal_options {
+
+    /**
+     * The maximum number of bytes to allow within the clipboard.
+     */
+    int clipboard_buffer_size;
 
     /**
      * Whether copying from the terminal clipboard should be blocked. If set,
@@ -276,11 +296,16 @@ guac_terminal_options* guac_terminal_options_create(
 
 /**
  * Frees all resources associated with the given terminal.
+ *
+ * @param term
+ *     The terminal to free.
  */
 void guac_terminal_free(guac_terminal* term);
 
 /**
- * Set the upload path handler for the given terminal.
+ * Sets the upload path handler for the given terminal. The upload path handler
+ * is invoked whenever the terminal codes requesting an upload path change are
+ * sent.
  *
  * @param terminal
  *     The terminal to set the upload path handler for.
@@ -293,12 +318,14 @@ void guac_terminal_set_upload_path_handler(guac_terminal* terminal,
         guac_terminal_upload_path_handler* upload_path_handler);
 
 /**
- * Set the file download handler for the given terminal.
+ * Sets the file download handler for the given terminal. The file download
+ * handler is invoked whenever the terminal codes requesting download of a
+ * given remote file are sent.
  *
  * @param terminal
  *     The terminal to set the file download handler for.
  *
- * @param upload_path_handler
+ * @param file_download_handler
  *      The handler to be called whenever the necessary terminal codes are sent to
  *      the given terminal to initiate a download of a given remote file.
  */
@@ -308,6 +335,13 @@ void guac_terminal_set_file_download_handler(guac_terminal* terminal,
 /**
  * Renders a single frame of terminal data. If data is not yet available,
  * this function will block until data is written.
+ *
+ * @param terminal
+ *     The terminal that should be rendered.
+ *
+ * @return
+ *     Zero if the frame was rendered successfully, non-zero if an error
+ *     occurred.
  */
 int guac_terminal_render_frame(guac_terminal* terminal);
 
@@ -316,6 +350,19 @@ int guac_terminal_render_frame(guac_terminal* terminal);
  * supplied by calls to guac_terminal_send_key(),
  * guac_terminal_send_mouse(), and guac_terminal_send_stream(). If input is not
  * yet available, this function will block.
+ *
+ * @param terminal
+ *     The terminal to read from.
+ *
+ * @param c
+ *     The buffer that should receive the bytes read.
+ *
+ * @param size
+ *     The number of bytes available within the buffer.
+ *
+ * @return
+ *     The number of bytes read into the buffer, zero if end-of-file is reached
+ *     (STDIN has been closed), or a negative value if an error occurs.
  */
 int guac_terminal_read_stdin(guac_terminal* terminal, char* c, int size);
 
@@ -370,15 +417,30 @@ void guac_terminal_notify(guac_terminal* terminal);
  * @return
  *     A newly-allocated string containing a single line of input read from the
  *     provided terminal's STDIN. This string must eventually be manually
- *     freed with a call to free().
+ *     freed with a call to guac_mem_free().
  */
 char* guac_terminal_prompt(guac_terminal* terminal, const char* title,
         bool echo);
 
 /**
  * Writes the given format string and arguments to this terminal's STDOUT in
- * the same manner as printf(). This function may block until space is
+ * the same manner as printf(). The entire populated format string will always
+ * be written unless an error occurs. This function may block until space is
  * freed in the output buffer by guac_terminal_render_frame().
+ *
+ * @param terminal
+ *     The terminal to write to.
+ *
+ * @param format
+ *     A printf-style format string describing the data to be written to
+ *     STDOUT.
+ *
+ * @param ...
+ *     Any arguments to use when filling the format string.
+ *
+ * @return
+ *     The number of bytes written to STDOUT, or a negative value if an error
+ *     occurs preventing the data from being written in its entirety.
  */
 int guac_terminal_printf(guac_terminal* terminal, const char* format, ...);
 
@@ -486,9 +548,24 @@ int guac_terminal_send_data(guac_terminal* term, const char* data, int length);
 int guac_terminal_send_string(guac_terminal* term, const char* data);
 
 /**
- * Writes the given string of characters to the terminal.
+ * Writes the given buffer to the given terminal's STDOUT. All requested bytes
+ * will be written unless an error occurs. This function may block until space
+ * is freed in the output buffer by guac_terminal_render_frame().
+ *
+ * @param term
+ *     The terminal to write to.
+ *
+ * @param buffer
+ *     A buffer containing the characters to be written to the terminal.
+ *
+ * @param length
+ *     The number of bytes within the given string to write to the terminal.
+ *
+ * @return
+ *     The number of bytes written to STDOUT, or a negative value if an error
+ *     occurs preventing the data from being written in its entirety.
  */
-int guac_terminal_write(guac_terminal* term, const char* c, int size);
+int guac_terminal_write(guac_terminal* term, const char* buffer, int length);
 
 /**
  * Initializes the handlers of the given guac_stream such that it serves as the
@@ -532,7 +609,7 @@ int guac_terminal_send_stream(guac_terminal* term, guac_user* user,
  *     STDIN.
  *
  * @param ...
- *     Any srguments to use when filling the format string.
+ *     Any arguments to use when filling the format string.
  *
  * @return
  *     The number of bytes written to STDIN, or a negative value if an error
@@ -545,6 +622,9 @@ int guac_terminal_sendf(guac_terminal* term, const char* format, ...);
  * Replicates the current display state to a user that has just joined the
  * connection. All instructions necessary to replicate state are sent over the
  * given socket.
+ *
+ * @deprecated The guac_terminal_sync_users method should be used when
+ * duplicating display state to a set of users.
  *
  * @param term
  *     The terminal emulator associated with the connection being joined.
@@ -560,7 +640,38 @@ void guac_terminal_dup(guac_terminal* term, guac_user* user,
         guac_socket* socket);
 
 /**
- * Resize the terminal to the given dimensions.
+ * Replicates the current display state to one or more users that are joining
+ * the connection. All instructions necessary to replicate state are sent over
+ * the given socket. The set of users receiving these instructions is
+ * determined solely by the socket chosen.
+ *
+ * @param term
+ *     The terminal whose state should be synchronized to the users.
+ *
+ * @param client
+ *     The client associated with the users to be synchronized.
+ *
+ * @param socket
+ *     The socket to which the terminal state will be broadcast.
+ */
+void guac_terminal_sync_users(
+        guac_terminal* term, guac_client* client, guac_socket* socket);
+
+/**
+ * Resize the client display and terminal to the given pixel dimensions.
+ *
+ * @param term
+ *     The terminal to resize.
+ *
+ * @param width
+ *     The new terminal width, in pixels.
+ *
+ * @param height
+ *     The new terminal height, in pixels.
+ *
+ * @return
+ *     Zero if the terminal was successfully resized to the given dimensions,
+ *     non-zero otherwise.
  */
 int guac_terminal_resize(guac_terminal* term, int width, int height);
 
@@ -641,13 +752,18 @@ void guac_terminal_clipboard_append(guac_terminal* terminal,
 void guac_terminal_remove_user(guac_terminal* terminal, guac_user* user);
 
 /**
- * Requests that the terminal write all output to a new pair of typescript
- * files within the given path and using the given base name. Terminal output
- * will be written to these new files, along with timing information. If the
- * create_path flag is non-zero, the given path will be created if it does not
- * yet exist. If creation of the typescript files or path fails, error messages
- * will automatically be logged, and no typescript will be written. The
- * typescript will automatically be closed once the terminal is freed.
+ * Requests that the terminal write all output to a pair of typescript
+ * files within the given path and using the given base name. If
+ * allow_write_existing is non-zero, these may be existing files; otherwise,
+ * the existing files may not be written to, and a non-zero value will be
+ * returned.
+ *
+ * Terminal output will be written to the files, along with timing information.
+ * If the create_path flag is non-zero, the given path will be created if it
+ * does not yet exist. If creation of the typescript files or path fails,
+ * error messages will automatically be logged, and no typescript will be
+ * written. The typescript will automatically be closed once the terminal is
+ * freed.
  *
  * @param term
  *     The terminal whose output should be written to a typescript.
@@ -665,12 +781,16 @@ void guac_terminal_remove_user(guac_terminal* terminal, guac_user* user);
  *     written, or non-zero if the path should be created if it does not yet
  *     exist.
  *
+ * @param allow_write_existing
+ *     Non-zero if writing to existing files should be allowed, or zero
+ *     otherwise.
+ *
  * @return
  *     Zero if the typescript files have been successfully created and a
  *     typescript will be written, non-zero otherwise.
  */
 int guac_terminal_create_typescript(guac_terminal* term, const char* path,
-        const char* name, int create_path);
+        const char* name, int create_path, int allow_write_existing);
 
 /**
  * Immediately applies the given color scheme to the given terminal, overriding

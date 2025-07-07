@@ -109,7 +109,7 @@ void guac_rdp_disp_free(guac_rdp_disp* disp);
 /**
  * Adds FreeRDP's "disp" plugin to the list of dynamic virtual channel plugins
  * to be loaded by FreeRDP's "drdynvc" plugin. The context of the plugin will
- * automatically be assicated with the guac_rdp_disp instance pointed to by the
+ * automatically be associated with the guac_rdp_disp instance pointed to by the
  * current guac_rdp_client. The plugin will only be loaded once the "drdynvc"
  * plugin is loaded. The "disp" plugin ultimately adds support for the Display
  * Update channel.
@@ -147,12 +147,12 @@ void guac_rdp_disp_load_plugin(rdpContext* context);
  *
  * @param width
  *     The desired display width, in pixels. Due to the restrictions of the RDP
- *     display update channel, this will be contrained to the range of 200
+ *     display update channel, this will be constrained to the range of 200
  *     through 8192 inclusive, and rounded down to the nearest even number.
  *
  * @param height
  *     The desired display height, in pixels. Due to the restrictions of the
- *     RDP display update channel, this will be contrained to the range of 200
+ *     RDP display update channel, this will be constrained to the range of 200
  *     through 8192 inclusive.
  */
 void guac_rdp_disp_set_size(guac_rdp_disp* disp, guac_rdp_settings* settings,

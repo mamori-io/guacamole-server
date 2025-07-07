@@ -19,10 +19,12 @@
 
 #include "config.h"
 
+#include "guacamole/mem.h"
 #include "guacamole/client.h"
 #include "guacamole/object.h"
 #include "guacamole/protocol.h"
 #include "guacamole/stream.h"
+#include "guacamole/string.h"
 #include "guacamole/timestamp.h"
 #include "guacamole/user.h"
 #include "user-handlers.h"
@@ -64,6 +66,7 @@ __guac_instruction_handler_mapping __guac_handshake_handler_map[] = {
     {"video",    __guac_handshake_video_handler},
     {"image",    __guac_handshake_image_handler},
     {"timezone", __guac_handshake_timezone_handler},
+    {"name",     __guac_handshake_name_handler},
     {NULL,       NULL}
 };
 
@@ -120,31 +123,39 @@ int __guac_handle_sync(guac_user* user, int argc, char** argv) {
         /* Calculate length of frame, including network and processing lag */
         frame_duration = current - timestamp;
 
-        /* Update lag statistics if at least one frame has been rendered */
+        /* Calculate processing lag portion of length of frame */
+        int frame_processing_lag = 0;
         if (user->last_frame_duration != 0) {
 
             /* Calculate lag using the previous frame as a baseline */
-            int processing_lag = frame_duration - user->last_frame_duration;
+            frame_processing_lag = frame_duration - user->last_frame_duration;
 
             /* Adjust back to zero if cumulative error leads to a negative
              * value */
-            if (processing_lag < 0)
-                processing_lag = 0;
-
-            user->processing_lag = processing_lag;
+            if (frame_processing_lag < 0)
+                frame_processing_lag = 0;
 
         }
 
-        /* Record baseline duration of frame by excluding lag */
-        user->last_frame_duration = frame_duration - user->processing_lag;
+        /* Record baseline duration of frame by excluding lag (this is the
+         * network round-trip time) */
+        int estimated_rtt = frame_duration - frame_processing_lag;
+        user->last_frame_duration = estimated_rtt;
+
+        /* Calculate cumulative accumulated processing lag relative to server timeline */
+        int processing_lag = current - user->last_received_timestamp - estimated_rtt;
+        if (processing_lag < 0)
+            processing_lag = 0;
+
+        user->processing_lag = processing_lag;
 
     }
 
     /* Log received timestamp and calculated lag (at TRACE level only) */
     guac_user_log(user, GUAC_LOG_TRACE,
             "User confirmation of frame %" PRIu64 "ms received "
-            "at %" PRIu64 "ms (processing_lag=%ims)",
-            timestamp, current, user->processing_lag);
+            "at %" PRIu64 "ms (processing_lag=%ims, estimated_rtt=%ims)",
+            timestamp, current, user->processing_lag, user->last_frame_duration);
 
     if (user->sync_handler)
         return user->sync_handler(user, timestamp);
@@ -676,14 +687,31 @@ int __guac_handshake_image_handler(guac_user* user, int argc, char** argv) {
     
 }
 
+int __guac_handshake_name_handler(guac_user* user, int argc, char** argv) {
+
+    /* Free any past value for the user's name */
+    guac_mem_free_const(user->info.name);
+
+    /* If a value is provided for the name, copy it into guac_user. */
+    if (argc > 0 && strcmp(argv[0], ""))
+        user->info.name = (const char*) guac_strdup(argv[0]);
+
+    /* No or empty value was provided, so make sure this is NULLed out. */
+    else
+        user->info.name = NULL;
+
+    return 0;
+
+}
+
 int __guac_handshake_timezone_handler(guac_user* user, int argc, char** argv) {
     
     /* Free any past value */
-    free((char *) user->info.timezone);
+    guac_mem_free_const(user->info.timezone);
     
     /* Store timezone, if present */
     if (argc > 0 && strcmp(argv[0], ""))
-        user->info.timezone = (const char*) strdup(argv[0]);
+        user->info.timezone = (const char*) guac_strdup(argv[0]);
     
     else
         user->info.timezone = NULL;
@@ -697,11 +725,12 @@ char** guac_copy_mimetypes(char** mimetypes, int count) {
     int i;
 
     /* Allocate sufficient space for NULL-terminated array of mimetypes */
-    char** mimetypes_copy = malloc(sizeof(char*) * (count+1));
+    char** mimetypes_copy = guac_mem_alloc(sizeof(char*),
+            guac_mem_ckd_add_or_die(count, 1));
 
     /* Copy each provided mimetype */
     for (i = 0; i < count; i++)
-        mimetypes_copy[i] = strdup(mimetypes[i]);
+        mimetypes_copy[i] = guac_strdup(mimetypes[i]);
 
     /* Terminate with NULL */
     mimetypes_copy[count] = NULL;
@@ -719,12 +748,12 @@ void guac_free_mimetypes(char** mimetypes) {
 
     /* Free all strings within NULL-terminated mimetype array */
     while (*current_mimetype != NULL) {
-        free(*current_mimetype);
+        guac_mem_free(*current_mimetype);
         current_mimetype++;
     }
 
     /* Free the array itself, now that its contents have been freed */
-    free(mimetypes);
+    guac_mem_free(mimetypes);
 
 }
 

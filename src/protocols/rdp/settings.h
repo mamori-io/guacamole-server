@@ -34,9 +34,19 @@
 #define RDP_CLIENT_HOSTNAME_SIZE 32
 
 /**
+ * The default server response timeout, in seconds.
+ */
+#define RDP_DEFAULT_TIMEOUT 10
+
+/**
  * The default RDP port.
  */
 #define RDP_DEFAULT_PORT 3389
+
+/**
+ * The default SFTP connection timeout, in seconds.
+ */
+#define RDP_DEFAULT_SFTP_TIMEOUT 10
 
 /**
  * The default RDP port used by Hyper-V "VMConnect".
@@ -57,6 +67,11 @@
  * Default color depth, in bits.
  */
 #define RDP_DEFAULT_DEPTH  16 
+
+/**
+ * The color depth required by the RDPGFX channel, in bits.
+ */
+#define RDP_GFX_REQUIRED_DEPTH 32
 
 /**
  * The filename to use for the screen recording, if not specified.
@@ -150,6 +165,11 @@ typedef struct guac_rdp_settings {
      * The port to connect to.
      */
     int port;
+
+    /**
+     * The timeout, in seconds, to wait for the remote host to respond.
+     */
+    int timeout;
 
     /**
      * The domain of the user logging in.
@@ -282,6 +302,18 @@ typedef struct guac_rdp_settings {
     int ignore_certificate;
 
     /**
+     * Whether or not a certificate should be added to the local trust
+     * store on first use.
+     */
+    int certificate_tofu;
+
+    /**
+     * The fingerprints of host certificates that should be trusted for
+     * this connection.
+     */
+    char* certificate_fingerprints;
+
+    /**
      * Whether authentication should be disabled. This is different from the
      * authentication that takes place when a user provides their username
      * and password. Authentication is required by definition for NLA.
@@ -308,6 +340,11 @@ typedef struct guac_rdp_settings {
      * no channels whatsoever.
      */
     char** svc_names;
+
+    /**
+     * The maximum number of bytes to allow within the clipboard.
+     */
+    int clipboard_buffer_size;
 
     /**
      * Whether outbound clipboard access should be blocked. If set, it will not
@@ -436,6 +473,12 @@ typedef struct guac_rdp_settings {
     char* sftp_port;
 
     /**
+     * The number of seconds to attempt to connect to the SSH server before
+     * timing out.
+     */
+    int sftp_timeout;
+
+    /**
      * The username to provide when authenticating with the SSH server for
      * SFTP.
      */
@@ -458,6 +501,11 @@ typedef struct guac_rdp_settings {
      * key.
      */
     char* sftp_passphrase;
+
+    /**
+     * The public key to use when connecting to the SFTP server, if applicable.
+     */
+    char* sftp_public_key;
 
     /**
      * The default location for file uploads within the SSH server. This will
@@ -543,6 +591,12 @@ typedef struct guac_rdp_settings {
     int recording_include_keys;
 
     /**
+     * Non-zero if existing files should be appended to when creating a new 
+     * recording. Disabled by default.
+     */
+    int recording_write_existing;
+
+    /** 
      * The method to apply when the user's display changes size.
      */
     guac_rdp_resize_method resize_method;
@@ -551,6 +605,11 @@ typedef struct guac_rdp_settings {
      * Whether audio input (microphone) is enabled.
      */
     int enable_audio_input;
+
+    /**
+     * Whether the RDP Graphics Pipeline Extension is enabled.
+     */
+    int enable_gfx;
 
     /**
      * Whether multi-touch support is enabled.

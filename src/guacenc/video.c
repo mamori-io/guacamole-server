@@ -32,6 +32,7 @@
 #include <libavutil/imgutils.h>
 #include <libswscale/swscale.h>
 #include <guacamole/client.h>
+#include <guacamole/mem.h>
 #include <guacamole/timestamp.h>
 
 #include <sys/types.h>
@@ -47,7 +48,7 @@
 guacenc_video* guacenc_video_alloc(const char* path, const char* codec_name,
         int width, int height, int bitrate) {
 
-    AVOutputFormat *container_format;
+    const AVOutputFormat *container_format;
     AVFormatContext *container_format_context;
     AVStream *video_stream;
     int ret;
@@ -63,7 +64,7 @@ guacenc_video* guacenc_video_alloc(const char* path, const char* codec_name,
     container_format = container_format_context->oformat;
 
     /* Pull codec based on name */
-    AVCodec* codec = avcodec_find_encoder_by_name(codec_name);
+    const AVCodec* codec = avcodec_find_encoder_by_name(codec_name);
     if (codec == NULL) {
         guacenc_log(GUAC_LOG_ERROR, "Failed to locate codec \"%s\".",
                 codec_name);
@@ -138,7 +139,7 @@ guacenc_video* guacenc_video_alloc(const char* path, const char* codec_name,
     }
 
     /* Allocate video structure */
-    guacenc_video* video = malloc(sizeof(guacenc_video));
+    guacenc_video* video = guac_mem_alloc(sizeof(guacenc_video));
     if (video == NULL)
         goto fail_alloc_video;
 
@@ -190,7 +191,7 @@ fail_codec:
 }
 
 /**
- * Flushes the specied frame as a new frame of video, updating the internal
+ * Flushes the specified frame as a new frame of video, updating the internal
  * video timestamp by one frame's worth of time. The pts member of the given
  * frame structure will be updated with the current presentation timestamp of
  * the video. If pending frames of the video are being flushed, the given frame
@@ -499,11 +500,13 @@ int guacenc_video_free(guacenc_video* video) {
 
     /* Clean up encoding context */
     if (video->context != NULL) {
+#if LIBAVCODEC_VERSION_INT < AV_VERSION_INT(61, 3, 100)
         avcodec_close(video->context);
+#endif
         avcodec_free_context(&(video->context));
     }
 
-    free(video);
+    guac_mem_free(video);
     return 0;
 
 }

@@ -21,6 +21,7 @@
 #include "rdp.h"
 
 #include <guacamole/client.h>
+#include <guacamole/mem.h>
 #include <guacamole/protocol.h>
 #include <guacamole/socket.h>
 #include <guacamole/stream.h>
@@ -47,8 +48,6 @@ char* const guac_rdp_pdf_filter_command[] = {
     "-dPARANOIDSAFER",
     "-sDEVICE=pdfwrite",
     "-sOutputFile=-",
-    "-c",
-    ".setpdfwrite",
     "-sstdout=/dev/null",
     "-f",
     "-",
@@ -456,7 +455,7 @@ void* guac_rdp_print_job_alloc(guac_user* user, void* data) {
         return NULL;
 
     /* Bail early if allocation fails */
-    guac_rdp_print_job* job = malloc(sizeof(guac_rdp_print_job));
+    guac_rdp_print_job* job = guac_mem_alloc(sizeof(guac_rdp_print_job));
     if (job == NULL)
         return NULL;
 
@@ -480,7 +479,7 @@ void* guac_rdp_print_job_alloc(guac_user* user, void* data) {
     /* Abort if print filter process cannot be created */
     if (job->filter_pid == -1) {
         guac_user_free_stream(user, stream);
-        free(job);
+        guac_mem_free(job);
         return NULL;
     }
 
@@ -661,7 +660,7 @@ void guac_rdp_print_job_free(guac_rdp_print_job* job) {
     pthread_mutex_destroy(&(job->state_lock));
 
     /* Free base structure */
-    free(job);
+    guac_mem_free(job);
 
 }
 

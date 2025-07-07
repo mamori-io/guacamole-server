@@ -17,11 +17,17 @@
  * under the License.
  */
 
+#include "common/string.h"
+
 #include "common-ssh/key.h"
 #include "common-ssh/ssh.h"
 #include "common-ssh/user.h"
 
 #include <guacamole/client.h>
+#include <guacamole/fips.h>
+#include <guacamole/mem.h>
+#include <guacamole/string.h>
+#include <guacamole/tcp.h>
 #include <libssh2.h>
 
 #ifdef LIBSSH2_USES_GCRYPT
@@ -32,19 +38,36 @@
 #include <openssl/ssl.h>
 
 #include <errno.h>
+#include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <pthread.h>
 #include <pwd.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/select.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
 #ifdef LIBSSH2_USES_GCRYPT
 GCRY_THREAD_OPTION_PTHREAD_IMPL;
 #endif
+
+/**
+ * A list of all key exchange algorithms that are both FIPS-compliant, and
+ * OpenSSL-supported. Note that "ext-info-c" is also included. While not a key
+ * exchange algorithm per se, it must be in the list to ensure that the server
+ * will send a SSH_MSG_EXT_INFO response, which is required to perform RSA key
+ * upgrades.
+ */
+#define FIPS_COMPLIANT_KEX_ALGORITHMS "diffie-hellman-group-exchange-sha256,ext-info-c"
+
+/**
+ * A list of ciphers that are both FIPS-compliant, and OpenSSL-supported.
+ */
+#define FIPS_COMPLIANT_CIPHERS "aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes128-ctr,aes192-ctr,aes256-ctr,aes128-cbc,aes192-cbc,aes256-cbc"
 
 #ifdef OPENSSL_REQUIRES_THREADING_CALLBACKS
 /**
@@ -105,7 +128,7 @@ static void guac_common_ssh_openssl_init_locks(int count) {
 
     /* Allocate required number of locks */
     guac_common_ssh_openssl_locks =
-        malloc(sizeof(pthread_mutex_t) * count);
+        guac_mem_alloc(sizeof(pthread_mutex_t), count);
 
     /* Initialize each lock */
     for (i=0; i < count; i++)
@@ -132,7 +155,7 @@ static void guac_common_ssh_openssl_free_locks(int count) {
         pthread_mutex_destroy(&(guac_common_ssh_openssl_locks[i]));
 
     /* Free lock array */
-    free(guac_common_ssh_openssl_locks);
+    guac_mem_free(guac_common_ssh_openssl_locks);
 
 }
 #endif
@@ -165,9 +188,11 @@ int guac_common_ssh_init(guac_client* client) {
     CRYPTO_set_locking_callback(guac_common_ssh_openssl_locking_callback);
 #endif
 
-    /* Init OpenSSL */
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
+    /* Init OpenSSL - only required for OpenSSL Versions < 1.1.0 */
     SSL_library_init();
     ERR_load_crypto_strings();
+#endif
 
     /* Init libssh2 */
     libssh2_init(0);
@@ -186,7 +211,7 @@ void guac_common_ssh_uninit() {
 /**
  * Callback for the keyboard-interactive authentication method. Currently
  * supports just one prompt for the password. This callback is invoked as
- * needed to fullfill a call to libssh2_userauth_keyboard_interactive().
+ * needed to fulfill a call to libssh2_userauth_keyboard_interactive().
  *
  * @param name
  *     An arbitrary name which should be printed to the terminal for the
@@ -234,7 +259,7 @@ static void guac_common_ssh_kbd_callback(const char *name, int name_len,
     /* Send password if only one prompt */
     if (num_prompts == 1) {
         char* password = common_session->user->password;
-        responses[0].text = strdup(password);
+        responses[0].text = guac_strdup(password);
         responses[0].length = strlen(password);
     }
 
@@ -266,6 +291,8 @@ static int guac_common_ssh_authenticate(guac_common_ssh_session* common_session)
 
     /* Get user credentials */
     guac_common_ssh_key* key = user->private_key;
+
+    char* public_key = user->public_key;
 
     /* Validate username provided */
     if (user->username == NULL) {
@@ -300,9 +327,11 @@ static int guac_common_ssh_authenticate(guac_common_ssh_session* common_session)
             return 1;
         }
 
+        int public_key_length = public_key == NULL ? 0 : strlen(public_key);
+
         /* Attempt public key auth */
         if (libssh2_userauth_publickey_frommemory(session, user->username,
-                    username_len, NULL, 0, key->private_key,
+                    username_len, public_key, public_key_length, key->private_key,
                     key->private_key_length, key->passphrase)) {
 
             /* Abort on failure */
@@ -386,92 +415,74 @@ static int guac_common_ssh_authenticate(guac_common_ssh_session* common_session)
 
 }
 
+/**
+ * Verifies if given algorithms are supported by libssh2.
+ * Writes log messages if an algorithm is not supported or
+ * could not get the list of supported algorithms from libssh2.
+ *
+ * @param client
+ *     The Guacamole client that is using SSH.
+ * 
+ * @param session
+ *     The session associated with the user to be authenticated.
+ *
+ * @param method_type
+ *      One of the libssh2 Method Type constants for libssh2_session_method_pref().
+ * 
+ * @param algs
+ *      A string with preferred list of algorithms, for example FIPS_COMPLIANT_CIPHERS.
+ *
+ */
+static void check_if_algs_are_supported(guac_client* client, LIBSSH2_SESSION* session,
+        int method_type, const char* algs) {
+
+    /* Request the list of supported algorithms/cyphers from libssh2. */
+    const char** supported_algs;
+    int supported_algs_count =
+        libssh2_session_supported_algs(session, method_type, &supported_algs);
+
+    if (supported_algs_count > 0) {
+        char** preferred_algs = guac_split(algs, ',');
+        for (int i = 0; preferred_algs[i]; i++) {
+            bool found = false;
+            /* Check if the algorithm is found in the libssh2 supported list. */
+            for (int j = 0; j < supported_algs_count; j++) {
+                if (strcmp(preferred_algs[i], supported_algs[j]) == 0) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                guac_client_log(client, GUAC_LOG_WARNING,
+                    "Preferred algorithm/cipher '%s' is not supported by libssh2", preferred_algs[i]);
+            }
+        }
+        guac_mem_free(preferred_algs);
+        /* should free if supported_algs_count is a positive number. */
+        libssh2_free(session, supported_algs);
+    }
+    else {
+        guac_client_log(client, GUAC_LOG_WARNING,
+            "libssh2 reports that no ciphers/algorithms are supported. This may be a bug in libssh2. "
+            "If the SSH connection fails, it may not be possible to log the cause here.");
+    }
+}
+
 guac_common_ssh_session* guac_common_ssh_create_session(guac_client* client,
         const char* hostname, const char* port, guac_common_ssh_user* user,
-        int keepalive, const char* host_key,
+        int timeout, int keepalive, const char* host_key,
         guac_ssh_credential_handler* credential_handler) {
 
-    int retval;
-
-    int fd;
-    struct addrinfo* addresses;
-    struct addrinfo* current_address;
-
-    char connected_address[1024];
-    char connected_port[64];
-
-    struct addrinfo hints = {
-        .ai_family   = AF_UNSPEC,
-        .ai_socktype = SOCK_STREAM,
-        .ai_protocol = IPPROTO_TCP
-    };
-
-    /* Get addresses connection */
-    if ((retval = getaddrinfo(hostname, port, &hints, &addresses))) {
+    int fd = guac_tcp_connect(hostname, port, timeout);
+    if (fd < 0) {
         guac_client_abort(client, GUAC_PROTOCOL_STATUS_SERVER_ERROR,
-                "Error parsing given address or port: %s",
-                gai_strerror(retval));
-        return NULL;
-    }
-
-    /* Attempt connection to each address until success */
-    current_address = addresses;
-    while (current_address != NULL) {
-
-        /* Resolve hostname */
-        if ((retval = getnameinfo(current_address->ai_addr,
-                current_address->ai_addrlen,
-                connected_address, sizeof(connected_address),
-                connected_port, sizeof(connected_port),
-                NI_NUMERICHOST | NI_NUMERICSERV)))
-            guac_client_log(client, GUAC_LOG_DEBUG,
-                    "Unable to resolve host: %s", gai_strerror(retval));
-
-        /* Get socket */
-        fd = socket(current_address->ai_family, SOCK_STREAM, 0);
-        if (fd < 0) {
-            guac_client_abort(client, GUAC_PROTOCOL_STATUS_SERVER_ERROR,
-                    "Unable to create socket: %s", strerror(errno));
-            freeaddrinfo(addresses);
-            return NULL;
-        }
-
-        /* Connect */
-        if (connect(fd, current_address->ai_addr,
-                        current_address->ai_addrlen) == 0) {
-
-            guac_client_log(client, GUAC_LOG_DEBUG,
-                    "Successfully connected to host %s, port %s",
-                    connected_address, connected_port);
-
-            /* Done if successful connect */
-            break;
-
-        }
-
-        /* Otherwise log information regarding bind failure */
-        guac_client_log(client, GUAC_LOG_DEBUG, "Unable to connect to "
-                "host %s, port %s: %s",
-                connected_address, connected_port, strerror(errno));
-
-        close(fd);
-        current_address = current_address->ai_next;
-
-    }
-
-    /* Free addrinfo */
-    freeaddrinfo(addresses);
-
-    /* If unable to connect to anything, fail */
-    if (current_address == NULL) {
-        guac_client_abort(client, GUAC_PROTOCOL_STATUS_UPSTREAM_NOT_FOUND,
-                "Unable to connect to any addresses.");
+            "Failed to open TCP connection to %s on %s.", hostname, port);
         return NULL;
     }
 
     /* Allocate new session */
     guac_common_ssh_session* common_session =
-        malloc(sizeof(guac_common_ssh_session));
+        guac_mem_alloc(sizeof(guac_common_ssh_session));
 
     /* Open SSH session */
     LIBSSH2_SESSION* session = libssh2_session_init_ex(NULL, NULL,
@@ -479,16 +490,35 @@ guac_common_ssh_session* guac_common_ssh_create_session(guac_client* client,
     if (session == NULL) {
         guac_client_abort(client, GUAC_PROTOCOL_STATUS_SERVER_ERROR,
                 "Session allocation failed.");
-        free(common_session);
+        guac_mem_free(common_session);
         close(fd);
         return NULL;
+    }
+
+    /*
+     * If FIPS mode is enabled, prefer only FIPS-compatible algorithms and
+     * ciphers that are also supported by libssh2. For more info, see:
+     * https://csrc.nist.gov/CSRC/media/projects/cryptographic-module-validation-program/documents/security-policies/140sp2906.pdf
+     */
+    if (guac_fips_enabled()) {
+        /*
+         * The following algorithm check is only to simplify debugging.
+         * libssh2_session_method_pref() ignores unsupported methods.
+         * So they are not sent to the remote host during protocol negotiation anyways.
+         */
+        check_if_algs_are_supported(client, session, LIBSSH2_METHOD_KEX, FIPS_COMPLIANT_KEX_ALGORITHMS);
+        libssh2_session_method_pref(session, LIBSSH2_METHOD_KEX, FIPS_COMPLIANT_KEX_ALGORITHMS);
+        check_if_algs_are_supported(client, session, LIBSSH2_METHOD_CRYPT_CS, FIPS_COMPLIANT_CIPHERS);
+        libssh2_session_method_pref(session, LIBSSH2_METHOD_CRYPT_CS, FIPS_COMPLIANT_CIPHERS);
+        check_if_algs_are_supported(client, session, LIBSSH2_METHOD_CRYPT_SC, FIPS_COMPLIANT_CIPHERS);
+        libssh2_session_method_pref(session, LIBSSH2_METHOD_CRYPT_SC, FIPS_COMPLIANT_CIPHERS);
     }
 
     /* Perform handshake */
     if (libssh2_session_handshake(session, fd)) {
         guac_client_abort(client, GUAC_PROTOCOL_STATUS_UPSTREAM_ERROR,
                 "SSH handshake failed.");
-        free(common_session);
+        guac_mem_free(common_session);
         close(fd);
         return NULL;
     }
@@ -501,7 +531,7 @@ guac_common_ssh_session* guac_common_ssh_create_session(guac_client* client,
     if (!remote_hostkey) {
         guac_client_abort(client, GUAC_PROTOCOL_STATUS_SERVER_ERROR,
             "Failed to get host key for %s", hostname);
-        free(common_session);
+        guac_mem_free(common_session);
         close(fd);
         return NULL;
     }
@@ -524,7 +554,7 @@ guac_common_ssh_session* guac_common_ssh_create_session(guac_client* client,
             guac_client_abort(client, GUAC_PROTOCOL_STATUS_SERVER_ERROR,
                 "Host key did not match any provided known host keys. %s", err_msg);
 
-        free(common_session);
+        guac_mem_free(common_session);
         close(fd);
         return NULL;
     }
@@ -538,7 +568,7 @@ guac_common_ssh_session* guac_common_ssh_create_session(guac_client* client,
 
     /* Attempt authentication */
     if (guac_common_ssh_authenticate(common_session)) {
-        free(common_session);
+        guac_mem_free(common_session);
         close(fd);
         return NULL;
     }
@@ -569,6 +599,6 @@ void guac_common_ssh_destroy_session(guac_common_ssh_session* session) {
     libssh2_session_free(session->session);
 
     /* Free all other data */
-    free(session);
+    guac_mem_free(session);
 
 }

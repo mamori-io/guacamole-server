@@ -21,6 +21,7 @@
 #include "rdp.h"
 
 #include <guacamole/client.h>
+#include <guacamole/mem.h>
 #include <guacamole/protocol.h>
 #include <guacamole/socket.h>
 #include <guacamole/stream.h>
@@ -116,8 +117,8 @@ static int guac_rdp_audio_buffer_duration(const guac_rdp_audio_format* format, i
  *     The number of bytes required to store audio data in the given format
  *     covering the given length of time.
  */
-static int guac_rdp_audio_buffer_length(const guac_rdp_audio_format* format, int duration) {
-    return duration * format->rate * format->bps * format->channels / 1000;
+static size_t guac_rdp_audio_buffer_length(const guac_rdp_audio_format* format, int duration) {
+    return guac_mem_ckd_mul_or_die(duration, format->rate, format->bps, format->channels) / 1000;
 }
 
 /**
@@ -261,7 +262,7 @@ static void* guac_rdp_audio_buffer_flush_thread(void* data) {
 
 guac_rdp_audio_buffer* guac_rdp_audio_buffer_alloc(guac_client* client) {
 
-    guac_rdp_audio_buffer* buffer = calloc(1, sizeof(guac_rdp_audio_buffer));
+    guac_rdp_audio_buffer* buffer = guac_mem_zalloc(sizeof(guac_rdp_audio_buffer));
 
     pthread_mutex_init(&(buffer->lock), NULL);
     pthread_cond_init(&(buffer->modified), NULL);
@@ -275,6 +276,34 @@ guac_rdp_audio_buffer* guac_rdp_audio_buffer_alloc(guac_client* client) {
 }
 
 /**
+ * Parameters describing an "ack" instruction to be sent to the current user of
+ * an inbound audio stream (guac_rdp_audio_buffer).
+ */
+typedef struct guac_rdp_audio_buffer_ack_params {
+
+    /**
+     * The audio buffer associated with the guac_stream for which the "ack"
+     * instruction should be sent, if any. If there is no associated
+     * guac_stream, no "ack" will be sent.
+     */
+    guac_rdp_audio_buffer* audio_buffer;
+
+    /**
+     * An arbitrary human-readable message to send along with the "ack".
+     */
+    const char* message;
+
+    /**
+     * The Guacamole protocol status code to send with the "ack". This should
+     * be GUAC_PROTOCOL_STATUS_SUCCESS if the audio stream has been set up
+     * successfully or GUAC_PROTOCOL_STATUS_RESOURCE_CLOSED if the audio stream
+     * has been closed (but may usable again if reopened).
+     */
+    guac_protocol_status status;
+
+} guac_rdp_audio_buffer_ack_params;
+
+/**
  * Sends an "ack" instruction over the socket associated with the Guacamole
  * stream over which audio data is being received. The "ack" instruction will
  * only be sent if the Guacamole audio stream has been established (through
@@ -285,33 +314,31 @@ guac_rdp_audio_buffer* guac_rdp_audio_buffer_alloc(guac_client* client) {
  * IMPORTANT: The guac_rdp_audio_buffer's lock MUST already be held when
  * invoking this function.
  *
- * @param audio_buffer
- *     The audio buffer associated with the guac_stream for which the "ack"
- *     instruction should be sent, if any. If there is no associated
- *     guac_stream, this function has no effect.
+ * @param user
+ *     The user that should receive the "ack".
  *
- * @param message
- *     An arbitrary human-readable message to send along with the "ack".
+ * @param data
+ *     An instance of guac_rdp_audio_buffer_ack_params describing the "ack"
+ *     instruction to be sent.
  *
- * @param status
- *     The Guacamole protocol status code to send with the "ack". This should
- *     be GUAC_PROTOCOL_STATUS_SUCCESS if the audio stream has been set up
- *     successfully or GUAC_PROTOCOL_STATUS_RESOURCE_CLOSED if the audio stream
- *     has been closed (but may usable again if reopened).
+ * @returns
+ *     Always NULL.
  */
-static void guac_rdp_audio_buffer_ack(guac_rdp_audio_buffer* audio_buffer,
-        const char* message, guac_protocol_status status) {
+static void* guac_rdp_audio_buffer_ack(guac_user* user, void* data) {
 
-    guac_user* user = audio_buffer->user;
+    guac_rdp_audio_buffer_ack_params* params = (guac_rdp_audio_buffer_ack_params*) data;
+    guac_rdp_audio_buffer* audio_buffer = params->audio_buffer;
     guac_stream* stream = audio_buffer->stream;
 
     /* Do not send ack unless both sides of the audio stream are ready */
     if (user == NULL || stream == NULL || audio_buffer->packet == NULL)
-        return;
+        return NULL;
 
     /* Send ack instruction */
-    guac_protocol_send_ack(user->socket, stream, message, status);
+    guac_protocol_send_ack(user->socket, stream, params->message, params->status);
     guac_socket_flush(user->socket);
+
+    return NULL;
 
 }
 
@@ -328,8 +355,8 @@ void guac_rdp_audio_buffer_set_stream(guac_rdp_audio_buffer* audio_buffer,
     audio_buffer->in_format.bps = bps;
 
     /* Acknowledge stream creation (if buffer is ready to receive) */
-    guac_rdp_audio_buffer_ack(audio_buffer,
-            "OK", GUAC_PROTOCOL_STATUS_SUCCESS);
+    guac_rdp_audio_buffer_ack_params ack_params = { audio_buffer, "OK", GUAC_PROTOCOL_STATUS_SUCCESS };
+    guac_client_for_user(audio_buffer->client, user, guac_rdp_audio_buffer_ack, &ack_params);
 
     guac_user_log(user, GUAC_LOG_DEBUG, "User is requesting to provide audio "
             "input as %i-channel, %i Hz PCM audio at %i bytes/sample.",
@@ -369,21 +396,23 @@ void guac_rdp_audio_buffer_begin(guac_rdp_audio_buffer* audio_buffer,
     audio_buffer->data = data;
 
     /* Calculate size of each packet in bytes */
-    audio_buffer->packet_size = packet_frames
-                              * audio_buffer->out_format.channels
-                              * audio_buffer->out_format.bps;
+    audio_buffer->packet_size = guac_mem_ckd_mul_or_die(packet_frames,
+                audio_buffer->out_format.channels,
+                audio_buffer->out_format.bps);
 
     /* Ensure outbound buffer includes enough space for at least 250ms of
      * audio */
-    int ideal_size = guac_rdp_audio_buffer_length(&audio_buffer->out_format,
+    size_t ideal_size = guac_rdp_audio_buffer_length(&audio_buffer->out_format,
             GUAC_RDP_AUDIO_BUFFER_MIN_DURATION);
 
     /* Round up to nearest whole packet */
-    int ideal_packets = (ideal_size + audio_buffer->packet_size - 1) / audio_buffer->packet_size;
+    size_t ideal_packets = guac_mem_ckd_sub_or_die(
+                guac_mem_ckd_add_or_die(ideal_size, audio_buffer->packet_size), 1
+            ) / audio_buffer->packet_size;
 
     /* Allocate new buffer */
-    audio_buffer->packet_buffer_size = ideal_packets * audio_buffer->packet_size;
-    audio_buffer->packet = malloc(audio_buffer->packet_buffer_size);
+    audio_buffer->packet_buffer_size = guac_mem_ckd_mul_or_die(ideal_packets, audio_buffer->packet_size);
+    audio_buffer->packet = guac_mem_alloc(audio_buffer->packet_buffer_size);
 
     guac_client_log(audio_buffer->client, GUAC_LOG_DEBUG, "Output buffer for "
             "audio input is %i bytes (up to %i ms).", audio_buffer->packet_buffer_size,
@@ -393,8 +422,10 @@ void guac_rdp_audio_buffer_begin(guac_rdp_audio_buffer* audio_buffer,
     clock_gettime(CLOCK_REALTIME, &audio_buffer->next_flush);
 
     /* Acknowledge stream creation (if stream is ready to receive) */
-    guac_rdp_audio_buffer_ack(audio_buffer,
-            "OK", GUAC_PROTOCOL_STATUS_SUCCESS);
+    if (audio_buffer->user != NULL) {
+        guac_rdp_audio_buffer_ack_params ack_params = { audio_buffer, "OK", GUAC_PROTOCOL_STATUS_SUCCESS };
+        guac_client_for_user(audio_buffer->client, audio_buffer->user, guac_rdp_audio_buffer_ack, &ack_params);
+    }
 
     pthread_cond_broadcast(&(audio_buffer->modified));
     pthread_mutex_unlock(&(audio_buffer->lock));
@@ -561,8 +592,10 @@ void guac_rdp_audio_buffer_end(guac_rdp_audio_buffer* audio_buffer) {
     }
 
     /* The stream is now closed */
-    guac_rdp_audio_buffer_ack(audio_buffer,
-            "CLOSED", GUAC_PROTOCOL_STATUS_RESOURCE_CLOSED);
+    if (audio_buffer->user != NULL) {
+        guac_rdp_audio_buffer_ack_params ack_params = { audio_buffer, "CLOSED", GUAC_PROTOCOL_STATUS_RESOURCE_CLOSED };
+        guac_client_for_user(audio_buffer->client, audio_buffer->user, guac_rdp_audio_buffer_ack, &ack_params);
+    }
 
     /* Unset user and stream */
     audio_buffer->user = NULL;
@@ -579,8 +612,7 @@ void guac_rdp_audio_buffer_end(guac_rdp_audio_buffer* audio_buffer) {
     audio_buffer->total_bytes_received = 0;
 
     /* Free packet (if any) */
-    free(audio_buffer->packet);
-    audio_buffer->packet = NULL;
+    guac_mem_free(audio_buffer->packet);
 
     pthread_cond_broadcast(&(audio_buffer->modified));
     pthread_mutex_unlock(&(audio_buffer->lock));
@@ -602,7 +634,7 @@ void guac_rdp_audio_buffer_free(guac_rdp_audio_buffer* audio_buffer) {
 
     pthread_mutex_destroy(&(audio_buffer->lock));
     pthread_cond_destroy(&(audio_buffer->modified));
-    free(audio_buffer);
+    guac_mem_free(audio_buffer);
 
 }
 

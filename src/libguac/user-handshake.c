@@ -19,6 +19,7 @@
 
 #include "config.h"
 
+#include "guacamole/mem.h"
 #include "guacamole/client.h"
 #include "guacamole/error.h"
 #include "guacamole/parser.h"
@@ -296,6 +297,7 @@ int guac_user_handle_connection(guac_user* user, int usec_timeout) {
     user->info.audio_mimetypes = NULL;
     user->info.image_mimetypes = NULL;
     user->info.video_mimetypes = NULL;
+    user->info.name = NULL;
     user->info.timezone = NULL;
     
     /* Count number of arguments. */
@@ -370,8 +372,9 @@ int guac_user_handle_connection(guac_user* user, int usec_timeout) {
     guac_free_mimetypes((char **) user->info.image_mimetypes);
     guac_free_mimetypes((char **) user->info.video_mimetypes);
     
-    /* Free timezone info. */
-    free((char *) user->info.timezone);
+    /* Free name and timezone info. */
+    guac_mem_free_const(user->info.name);
+    guac_mem_free_const(user->info.timezone);
     
     guac_parser_free(parser);
 
